@@ -54,6 +54,9 @@ The output is a clean, structured dataset (CSV + images) that can be directly us
 - **Tire & Brake Data**  
   Surface and inner tire temperatures, pressures, wheel slip, brake temperatures
 
+- **Episode Boundaries**  
+  Automatic detection and tracking of episode transitions for proper train/val splitting (prevents temporal data leakage)
+
 ---
 
 ### Analysis Tools
@@ -100,7 +103,8 @@ data/session_YYYY-MM-DD_HH-MM-SS/
 ### Representative CSV Fields
 
 - `system_time`, `game_time`
-- `frame_id`
+- `frame_id`, `episode_id`
+- `frame_dt` (temporal spacing validation)
 - `throttle`, `brake`, `steer`
 - `gear`, `drs`, `rpm`, `speed_kph`
 - `x`, `y`, `z`, `yaw`, `pitch`, `roll`
@@ -115,15 +119,87 @@ Images are stored as JPEG files at a reduced resolution (default **320×180**) t
 
 ---
 
+## Episode Tracking
+
+The system automatically detects **episode boundaries** to ensure proper train/validation splits for machine learning:
+
+### What is an Episode?
+
+An episode is a **continuous, uninterrupted driving sequence** with consistent physics. The episode ends when continuity breaks (flashback, restart, crash reset, etc.).
+
+### Why Episode Tracking Matters
+
+Without episode boundaries:
+- ❌ Train/val splits can leak temporal information
+- ❌ Model "sees the future" during validation
+- ❌ Offline metrics look great, but closed-loop deployment fails
+
+With episode boundaries:
+- ✅ Clean train/val splits by episode_id
+- ✅ No temporal leakage between sets
+- ✅ Model learns policies, not sequences
+- ✅ Better generalization to novel situations
+
+### Episode Break Detection
+
+Episodes increment automatically when ANY of these occur:
+
+**Hard Breaks (Always Increment):**
+- Session restart or lap restart
+- Flashback used (time rewind)
+- Teleport to pits
+- Frame ID or game time decreases
+- Lap number decreases
+
+**Soft Breaks (Conservative Detection):**
+- Car stationary (speed < 1 kph) for > 1 second
+- Large position jump (> 10 meters between frames)
+
+### Validating Episode Structure
+
+After recording, validate your episodes:
+
+```powershell
+cd data_collection
+python validate_episodes.py
+```
+
+The script checks:
+- Episode length distribution (should have mostly long episodes)
+- Temporal integrity (game_time monotonic within episodes)
+- Break detection quality (no false negatives)
+
+**Good episode structure:**
+- 5-15 episodes per session
+- Majority of frames in long episodes (500+ frames)
+- Short episodes around crashes (expected)
+
+**Bad patterns to watch for:**
+- 1 giant episode → break detection not working
+- 100s of tiny episodes → detection too aggressive
+
+---
+
 ## Cleaning Session Data
 
 To validate and clean recorded sessions:
 
 ```powershell
-python data_collection/telementry/clean_data.py
+cd data_collection/telementry
+python clean_data.py
 ```
 
 The script helps identify incomplete or corrupted telemetry data and removes unused image files.
+
+### Episode Validation
+
+To analyze episode structure quality:
+
+```powershell
+cd data_collection
+python validate_episodes.py                    # Analyzes latest session
+python validate_episodes.py --session <name>   # Analyzes specific session
+```
 
 ---
 
