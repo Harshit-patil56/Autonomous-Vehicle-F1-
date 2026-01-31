@@ -1,0 +1,47 @@
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Distribution / build
+build/
+dist/
+*.egg-info/
+
+# IDEs / editors
+.vscode/
+.idea/
+*.swp
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs and runtime files
+*.log
+
+# Data and large outputs
+/data/
+data/
+data_collection/data/
+*/images/
+*.jpg
+*.jpeg
+*.png
+
+# Project-specific
+/Archicture_images/
+/Readme.txt
+/Help.md
+
+# Model artifacts
+*.pt
+*.pth
+*.h5
+*.pkl
+*.joblib
