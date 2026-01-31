@@ -1,0 +1,29 @@
+# Telemetry data extraction for F1 2020
+f1-2020-telemetry
+
+# High-performance screen capture (used for real-time vision input)
+dxcam
+
+# Computer vision & image processing
+opencv-python
+
+pandas
+numpy
+pyarrow
+
+
+
+#for f1 screen capture
+dxcam[cv2]
+pywin32
+keyboard
+mss
+tqdm
+#ml
+scipy
+
+
+#controller
+vgamepad
+keyboard
+pyvjoy
