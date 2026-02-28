@@ -2,16 +2,20 @@ import time
 import os
 import threading
 import queue
+import json
 import logging
 from datetime import datetime
+
 import cv2
 import mss
 import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 # Import your existing modules
-from telementry.state import TelemetryState
-from telementry.listener import telemetry_thread
+from .state import TelemetryState
+from .listener import telemetry_thread
 
 # --- CONFIGURATION ---
 WINDOW_TITLE_PARTIAL = "F1 2020"  # To find the game window
@@ -20,21 +24,26 @@ FLUSH_BATCH_SIZE = 200            # Save to disk every N frames
 TARGET_FPS = 20                   # Fixed capture rate (frames per second)
 
 class DataWriterWorker(threading.Thread):
+    """Background worker that saves images and Parquet row-groups to disk.
+
+    Separates disk I/O (slow) from capture (fast). Each
+    FLUSH_BATCH_SIZE rows are written as a numbered
+    ``batch_NNNN.parquet`` file.  ``build_dataset.py`` merges
+    all batch files into a single dataset later.
     """
-    Background worker that saves Images and CSV rows to disk.
-    It separates 'Disk I/O' (slow) from 'Capture' (fast).
-    """
-    def __init__(self, session_dir, write_queue):
+
+    def __init__(self, session_dir: str, write_queue: queue.Queue) -> None:
         super().__init__()
         self.session_dir = session_dir
         self.images_dir = os.path.join(session_dir, "images")
-        self.csv_path = os.path.join(session_dir, "data.csv")
+        self.parquet_dir = os.path.join(session_dir, "telemetry_batches")
         self.queue = write_queue
         self.running = True
-        self.buffer = [] # Buffer for CSV rows
+        self.buffer: list[dict] = []
+        self.batch_count: int = 0
 
-        # Setup folders
         os.makedirs(self.images_dir, exist_ok=True)
+        os.makedirs(self.parquet_dir, exist_ok=True)
 
     def run(self):
         print("💾 Storage Worker started...")
@@ -62,14 +71,12 @@ class DataWriterWorker(threading.Thread):
                 # Save Image
                 cv2.imwrite(img_path, img_small)
 
-                # --- 2. PROCESS CSV ---
-                # Add image filename to telemetry data so they are linked
-                tele_data['image_path'] = img_name
+                # --- 2. PROCESS TELEMETRY ROW ---
+                tele_data["image_path"] = img_name
                 self.buffer.append(tele_data)
 
-                # Flush CSV buffer to disk periodically
                 if len(self.buffer) >= FLUSH_BATCH_SIZE:
-                    self.flush_csv()
+                    self._flush_batch()
 
                 self.queue.task_done()
 
@@ -78,22 +85,30 @@ class DataWriterWorker(threading.Thread):
             except Exception as e:
                 print(f"Error in Writer: {e}")
 
-        # Final flush on exit
-        self.flush_csv()
+        # Final flush on exit.
+        self._flush_batch()
 
-    def flush_csv(self):
+    def _flush_batch(self) -> None:
+        """Write buffered rows as a numbered Parquet file.
+
+        Array columns (wheel_speed, brake_temp, etc.) are stored as
+        ``list<float>`` which Parquet / PyArrow handles natively —
+        no string serialisation needed.
+        """
         if not self.buffer:
             return
-        
+
         df = pd.DataFrame(self.buffer)
-        
-        # Append mode ('a'), write header only if file is new
-        file_exists = os.path.isfile(self.csv_path)
+        out_path = os.path.join(
+            self.parquet_dir, f"batch_{self.batch_count:04d}.parquet"
+        )
         try:
-            df.to_csv(self.csv_path, mode='a', header=not file_exists, index=False)
+            table = pa.Table.from_pandas(df, preserve_index=False)
+            pq.write_table(table, out_path, compression="snappy")
+            self.batch_count += 1
             self.buffer.clear()
-        except PermissionError:
-            print(f"⚠️  Permission Denied: Could not write CSV to {self.csv_path}")
+        except Exception as e:
+            print(f"⚠️  Parquet write failed ({out_path}): {e}")
 
     def stop(self):
         self.running = False
@@ -132,6 +147,31 @@ def main():
 
     print(f"\n>>> 🏎️  F1 DATA RECORDER v2.0")
     print(f">>> Session: {session_id}")
+
+    # --- 1b. WRITE SESSION CONFIG ---
+    track_name = input(">>> Enter track name (e.g. Bahrain): ").strip() or "Unknown"
+    pb_input = input(">>> Enter your PB lap time in seconds (e.g. 95.4): ").strip()
+    try:
+        personal_best = float(pb_input)
+    except ValueError:
+        personal_best = 0.0
+        print(">>> No valid PB entered — set to 0.0 (filter_laps will skip PB check).")
+
+    session_config = {
+        "session_id": session_id,
+        "track": track_name,
+        "personal_best_seconds": personal_best,
+        "abs": True,
+        "traction_control": "full",
+        "game_mode": "Time Trial",
+        "target_fps": TARGET_FPS,
+        "image_size": list(TARGET_SIZE),
+        "started_at": datetime.now().isoformat(),
+    }
+    config_path = os.path.join(session_dir, "session_config.json")
+    with open(config_path, "w", encoding="utf-8") as f:
+        json.dump(session_config, f, indent=2)
+    print(f">>> Config saved: {config_path}")
 
     # --- 2. SETUP CAMERA & WRITER ---
     try:
@@ -190,6 +230,15 @@ def main():
             if current_game_time <= last_game_time_captured:
                 time.sleep(0.001)  # Small sleep to prevent CPU spinning
                 continue
+
+            # 3b. CHECK: Enforce fixed capture rate (1/TARGET_FPS between frames).
+            # Without this gate the inter-frame gap varies between 0.03 s and
+            # 0.09 s, so "20 frames ahead" means a different physical distance
+            # depending on when the frame was captured.
+            if last_game_time_captured > 0:
+                if (current_game_time - last_game_time_captured) < (1.0 / TARGET_FPS):
+                    time.sleep(0.001)
+                    continue
 
             # --- EPISODE BOUNDARY DETECTION (Conservative) ---
             episode_break = False

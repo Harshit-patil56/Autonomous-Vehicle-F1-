@@ -187,6 +187,7 @@ class TelemetryState:
                 "tire_surface": list(self.vehicle.tire_surface),
                 "tire_inner": list(self.vehicle.tire_inner),
                 "tire_pressure": list(self.vehicle.tire_pressure),
+                "wheel_speed": list(self.vehicle.wheel_speed),
                 "wheel_slip": list(self.vehicle.wheel_slip),
 
                 # --- Track ---

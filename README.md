@@ -1,204 +1,53 @@
-# Autonomous F1 Car v2  
-**Synchronized Telemetry & Vision Data Collection for F1 2020**
+# Autonomous F1 Car v2
 
-Autonomous F1 Car v2 is a structured data collection and analysis toolkit designed for research and experimentation in autonomous driving using the **F1 2020 racing simulator**. The system captures high-frequency vehicle telemetry via UDP and synchronizes it with game screenshots to generate datasets suitable for machine learning and performance analysis.
+**End-to-end autonomous driving for F1 2020 — from data collection to real-time control.**
 
----
-
-## Overview
-
-This project provides:
-
-- Real-time ingestion of F1 2020 UDP telemetry  
-- Synchronized visual frame capture aligned with telemetry timestamps  
-- Multi-threaded data recording to minimize frame drops  
-- Organized, session-based storage of telemetry and images  
-- Interactive tools for post-session analysis and visualization  
-
-The output is a clean, structured dataset (CSV + images) that can be directly used for analysis or model training.
+Camera frames pass through a MobileNetV3-Small CNN that predicts Bezier control points, which are smoothed into a path and followed by a Pure Pursuit steering controller with rule-based throttle/brake and gear logic. The virtual gamepad sends inputs back to the game in real time.
 
 ---
 
-## Features
-
-### Data Collection
-
-- **Real-time Telemetry Capture**  
-  Collects detailed vehicle telemetry from F1 2020 using UDP packets.
-
-- **Synchronized Screen Capture**  
-  Captures game screenshots aligned with telemetry frames for vision-based learning.
-
-- **Multi-threaded Architecture**  
-  Background workers handle disk I/O and image saving to maintain capture performance.
-
-- **Session Management**  
-  Each run is stored in a uniquely timestamped session directory.
-
----
-
-### Telemetry Data Captured
-
-- **Vehicle Controls**  
-  Throttle, brake, steering, gear, DRS status
-
-- **Vehicle Dynamics & Physics**  
-  Position (X, Y, Z), yaw, pitch, roll, lateral and longitudinal G-forces
-
-- **Powertrain & Systems**  
-  Engine RPM, vehicle speed, engine temperature
-
-- **Track & Lap Information**  
-  Lap number, sector, lap distance, lap times, invalid lap flag
-
-- **Tire & Brake Data**  
-  Surface and inner tire temperatures, pressures, wheel slip, brake temperatures
-
-- **Episode Boundaries**  
-  Automatic detection and tracking of episode transitions for proper train/val splitting (prevents temporal data leakage)
-
----
-
-### Analysis Tools
-
-- **Interactive GUI**  
-  Tkinter-based desktop application for telemetry inspection.
-
-- **Time-Series Telemetry Plots**  
-  Speed, throttle, brake, and steering traces.
-
-- **Track Mapping**  
-  2D visualization of vehicle position and racing lines.
-
-- **Vehicle Dynamics Visualization**  
-  G-force plots, tire behavior, and motion characteristics.
-
-- **Lap Analysis**  
-  Lap-by-lap comparison of performance metrics.
-
----
-
-## Requirements
-
-- Windows (recommended for screen capture and window handling)
-- Python 3.8 or higher
-- F1 2020 with UDP telemetry enabled  
-  - Default UDP port: `20777`
-
----
-
-## Data Storage Format
-
-Each recording session is saved under:
+## Pipeline
 
 ```
-data/session_YYYY-MM-DD_HH-MM-SS/
+Record  →  Filter  →  Label  →  Validate  →  Build  →  Train  →  Export  →  Drive
 ```
 
-### Session Contents
-
-- `data.csv` — synchronized telemetry records  
-- `images/` — corresponding screenshots named by timestamp  
-
-### Representative CSV Fields
-
-- `system_time`, `game_time`
-- `frame_id`, `episode_id`
-- `frame_dt` (temporal spacing validation)
-- `throttle`, `brake`, `steer`
-- `gear`, `drs`, `rpm`, `speed_kph`
-- `x`, `y`, `z`, `yaw`, `pitch`, `roll`
-- `g_lat`, `g_long`, `motion_speed`
-- `engine_temp`, `brake_temp`
-- `tire_surface`, `tire_inner`, `tire_pressure`, `wheel_slip`
-- `lap`, `sector`, `lap_distance`
-- `current_lap_time`, `last_lap_time`, `invalid_lap`
-- `image_path`
-
-Images are stored as JPEG files at a reduced resolution (default **320×180**) to reduce disk usage and improve downstream processing speed.
+| Stage | Module | Description |
+|-------|--------|-------------|
+| **Record** | `data_collection/telementry/master_recorder.py` | Captures UDP telemetry + screen at 20 FPS, writes Parquet batches |
+| **Filter** | `post_processing/filter_laps.py` | Removes formation laps, invalid laps, slow outliers |
+| **Label** | `post_processing/label_waypoints.py` | Generates car-local waypoint labels (vectorized, fast) |
+| **Validate** | `post_processing/validate_episodes.py` | Checks temporal integrity, episode structure, data completeness |
+| **Build** | `post_processing/build_dataset.py` | Splits data by episode into `train.parquet` / `val.parquet` |
+| **Train** | `model/train.py` | PyTorch Lightning training loop (WaypointNet → L1 loss on Bezier CPs) |
+| **Export** | `model/export_onnx.py` | Converts `.ckpt` → `.onnx` for fast inference |
+| **Drive** | `inference/inference_loop.py` | ONNX inference + controllers → vgamepad output at 50 Hz |
 
 ---
 
-## Episode Tracking
+## Architecture
 
-The system automatically detects **episode boundaries** to ensure proper train/validation splits for machine learning:
-
-### What is an Episode?
-
-An episode is a **continuous, uninterrupted driving sequence** with consistent physics. The episode ends when continuity breaks (flashback, restart, crash reset, etc.).
-
-### Why Episode Tracking Matters
-
-Without episode boundaries:
-- ❌ Train/val splits can leak temporal information
-- ❌ Model "sees the future" during validation
-- ❌ Offline metrics look great, but closed-loop deployment fails
-
-With episode boundaries:
-- ✅ Clean train/val splits by episode_id
-- ✅ No temporal leakage between sets
-- ✅ Model learns policies, not sequences
-- ✅ Better generalization to novel situations
-
-### Episode Break Detection
-
-Episodes increment automatically when ANY of these occur:
-
-**Hard Breaks (Always Increment):**
-- Session restart or lap restart
-- Flashback used (time rewind)
-- Teleport to pits
-- Frame ID or game time decreases
-- Lap number decreases
-
-**Soft Breaks (Conservative Detection):**
-- Car stationary (speed < 1 kph) for > 1 second
-- Large position jump (> 10 meters between frames)
-
-### Validating Episode Structure
-
-After recording, validate your episodes:
-
-```powershell
-cd data_collection
-python validate_episodes.py
 ```
-
-The script checks:
-- Episode length distribution (should have mostly long episodes)
-- Temporal integrity (game_time monotonic within episodes)
-- Break detection quality (no false negatives)
-
-**Good episode structure:**
-- 5-15 episodes per session
-- Majority of frames in long episodes (500+ frames)
-- Short episodes around crashes (expected)
-
-**Bad patterns to watch for:**
-- 1 giant episode → break detection not working
-- 100s of tiny episodes → detection too aggressive
-
----
-
-## Cleaning Session Data
-
-To validate and clean recorded sessions:
-
-```powershell
-cd data_collection/telementry
-python clean_data.py
-```
-
-The script helps identify incomplete or corrupted telemetry data and removes unused image files.
-
-### Episode Validation
-
-To analyze episode structure quality:
-
-```powershell
-cd data_collection
-python validate_episodes.py                    # Analyzes latest session
-python validate_episodes.py --session <name>   # Analyzes specific session
+Camera Frame (320×180 RGB)
+        │
+  MobileNetV3-Small (pretrained)
+        │
+  Feature Vector (576) + speed scalar
+        │
+  Regression Head → 8 Bezier control points
+  + fixed origin (0,0) = 9 total
+        │
+  Bezier Curve (order 8)
+        │
+  ┌─────┴──────────┐
+  Pure Pursuit      Rule-based
+  Steering          Throttle/Brake
+  │                 │
+  └─────┬───────────┘
+        │
+  Gear Logic (RPM table)
+        │
+  vgamepad → F1 2020
 ```
 
 ---
@@ -206,52 +55,203 @@ python validate_episodes.py --session <name>   # Analyzes specific session
 ## Project Structure
 
 ```
-Autonomuns_F1_Car_v2/
-├─ data_collection/
-│  ├─ telementry/
-│  │  ├─ master_recorder.py
-│  │  ├─ listener.py
-│  │  ├─ state.py
-│  │  ├─ packets.py
-│  │  ├─ analyze.py
-│  │  ├─ clean_data.py
-│  │  └─ capture_f1.py
-│  ├─ data/
-│  └─ model/
-├─ Archicture_images/
-├─ requirements.txt
-├─ Help.md
-└─ README.md
+Autonomous-Vehicle-F1-/
+├── config.py                        # Central frozen-dataclass configuration
+├── requirements.txt
+├── pytest.ini
+├── data_collection/
+│   └── telementry/
+│       ├── master_recorder.py       # Main recording entry point
+│       ├── listener.py              # UDP socket → parsed telemetry
+│       ├── state.py                 # Episode tracking, break detection
+│       ├── packets.py               # ctypes structs for F1 2020 UDP
+│       └── analyze.py               # Tkinter GUI for data inspection
+├── post_processing/
+│   ├── filter_laps.py               # Lap filtering (invalid, slow, out-lap)
+│   ├── label_waypoints.py           # Vectorized waypoint label generation
+│   ├── validate_episodes.py         # Data integrity checks
+│   └── build_dataset.py             # Train/val split by episode
+├── model/
+│   ├── network.py                   # WaypointNet (MobileNetV3 + head)
+│   ├── dataset.py                   # PyTorch Dataset (Parquet + images)
+│   ├── train.py                     # Lightning training CLI
+│   └── export_onnx.py               # ONNX export with verification
+├── controller/
+│   ├── bezier.py                    # Bezier math (fit, evaluate, curvature)
+│   ├── pure_pursuit.py              # Steering controller
+│   ├── throttle_brake.py            # Speed controller (curvature-based)
+│   └── gear_logic.py                # RPM-based gear shifting
+├── inference/
+│   └── inference_loop.py            # Real-time ONNX + controllers → gamepad
+└── tests/
+    ├── test_bezier.py
+    ├── test_config.py
+    ├── test_filter_laps.py
+    ├── test_gear_logic.py
+    ├── test_label_waypoints.py
+    ├── test_network.py
+    ├── test_pure_pursuit.py
+    └── test_throttle_brake.py
 ```
+
+---
+
+## Requirements
+
+- **OS:** Windows (required for `dxcam` screen capture and `vgamepad`)
+- **Python:** 3.10+
+- **GPU:** NVIDIA GPU with CUDA (GTX 1650 4 GB or better)
+- **Game:** F1 2020 with UDP telemetry enabled on port `20777`
+
+### Install
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+```
+
+---
+
+## Usage
+
+### 1. Record data
+
+```powershell
+cd data_collection
+python -m telementry.master_recorder
+```
+
+Telemetry and screenshots are saved to `data_collection/data/session_<timestamp>/` as Parquet batches + JPEG images.
+
+### 2. Filter laps
+
+```powershell
+python -m post_processing.filter_laps --session data_collection/data/session_...
+```
+
+### 3. Generate waypoint labels
+
+```powershell
+python -m post_processing.label_waypoints ^
+    --input data_collection/data/session_.../frames_filtered.parquet ^
+    --output data_collection/data/session_.../frames_labeled.parquet
+```
+
+### 4. Validate episodes
+
+```powershell
+python -m post_processing.validate_episodes ^
+    --input data_collection/data/session_.../frames_labeled.parquet
+```
+
+### 5. Build train/val dataset
+
+```powershell
+python -m post_processing.build_dataset ^
+    --input data_collection/data/session_.../frames_labeled.parquet ^
+    --output-dir data_collection/data/dataset/
+```
+
+### 6. Train
+
+```powershell
+python -m model.train ^
+    --train-parquet data_collection/data/dataset/train.parquet ^
+    --val-parquet data_collection/data/dataset/val.parquet ^
+    --max-epochs 50 ^
+    --seed 42
+```
+
+### 7. Export to ONNX
+
+```powershell
+python -m model.export_onnx ^
+    --checkpoint lightning_logs/version_0/checkpoints/last.ckpt ^
+    --output model/checkpoints/waypoint_net.onnx
+```
+
+### 8. Drive
+
+```powershell
+python -m inference.inference_loop
+```
+
+The inference loop reads screen frames, runs ONNX inference, and sends steering/throttle/brake/gear commands through a virtual Xbox controller at 50 Hz.
 
 ---
 
 ## Configuration
 
-The following parameters can be adjusted in `master_recorder.py`:
+All constants are defined in `config.py` using frozen dataclasses:
 
-- `WINDOW_TITLE_PARTIAL` — substring used to identify the F1 2020 game window  
-- `TARGET_SIZE` — screenshot resolution  
-- `FLUSH_BATCH_SIZE` — number of telemetry rows buffered before writing to CSV  
+| Config Class | Controls |
+|-------------|----------|
+| `ImageConfig` | Input resolution, ImageNet mean/std |
+| `ModelConfig` | Control points, Bezier order, speed normalisation |
+| `RecorderConfig` | Target FPS, batch size, UDP port |
+| `InferenceConfig` | Target Hz, ONNX model path |
+| `ControllerConfig` | Wheelbase, max steer, lookahead, throttle/brake gains |
 
-Tune these values based on system performance and storage constraints.
+Import the singleton instances directly:
 
----
-
-## Troubleshooting
-
-- **Game window not found**  
-  Ensure F1 2020 is running and the window title contains `F1 2020`.
-
-- **Telemetry not received**  
-  Verify that UDP telemetry is enabled in-game and port `20777` is open.
-
-- **Permission denied while writing data**  
-  Close any application holding the CSV file open or run the script with appropriate permissions.
+```python
+from config import IMAGE, MODEL, CONTROLLER
+```
 
 ---
 
-## License & Notice
+## Data Format
 
-This project is intended for **research and educational purposes only**.  
-Ensure compliance with F1 2020’s terms of service when collecting and using telemetry data.
+Telemetry is stored as **Apache Parquet** (not CSV) for compact storage and fast reads. Key columns:
+
+| Category | Columns |
+|----------|---------|
+| Position | `x`, `y`, `z`, `yaw`, `pitch`, `roll` |
+| Controls | `throttle`, `brake`, `steer`, `gear`, `drs` |
+| Dynamics | `speed_kph`, `rpm`, `g_lat`, `g_long` |
+| Lap | `lap`, `sector`, `lap_distance`, `current_lap_time`, `invalid_lap` |
+| Episode | `episode_id`, `frame_id`, `game_time`, `system_time` |
+| Vision | `image_path` |
+
+---
+
+## Episode Tracking
+
+Episodes are continuous, uninterrupted driving sequences. The recorder increments `episode_id` when any of these occur:
+
+- Session or lap restart
+- Flashback (time rewind)
+- Teleport to pits
+- Frame ID or game time decreases
+- Position jump > 10 m between frames
+- Car stationary (< 1 kph) for > 1 second
+
+Proper episode boundaries prevent **temporal data leakage** in train/val splits — the model never sees future frames during validation.
+
+---
+
+## Testing
+
+```powershell
+python -m pytest tests/ -v
+```
+
+103 tests covering: Bezier math, Pure Pursuit steering, throttle/brake controller, gear logic, lap filtering, waypoint labelling, neural network forward pass, and configuration integrity.
+
+---
+
+## Analysis GUI
+
+```powershell
+cd data_collection
+python -m telementry.analyze
+```
+
+Tkinter-based tool for inspecting recorded sessions: speed/throttle/brake traces, 2D track maps, tire data, and lap comparisons. Supports both Parquet and CSV files.
+
+---
+
+## License
+
+This project is for **research and educational purposes only**. Comply with F1 2020's terms of service when collecting and using telemetry data.

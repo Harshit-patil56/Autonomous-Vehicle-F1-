@@ -1,29 +1,40 @@
-# Telemetry data extraction for F1 2020
+# =============================================================
+# Autonomous F1 — Requirements
+# =============================================================
+
+# ---- Telemetry & Data Collection ----
 f1-2020-telemetry
+pyarrow>=14.0.0
+pandas>=2.1.0
+numpy>=1.24.0
 
-# High-performance screen capture (used for real-time vision input)
-dxcam
+# ---- Screen Capture ----
+dxcam>=0.0.5
+mss>=9.0.0
+pywin32>=306
 
-# Computer vision & image processing
-opencv-python
+# ---- Computer Vision ----
+opencv-python>=4.8.0
 
-pandas
-numpy
-pyarrow
+# ---- Deep Learning (Training) ----
+torch>=2.1.0
+torchvision>=0.16.0
+pytorch-lightning>=2.1.0
 
+# ---- Inference ----
+onnx>=1.15.0
+onnxruntime-gpu>=1.17.0
 
+# ---- Experiment Tracking ----
+wandb>=0.16.0
 
-#for f1 screen capture
-dxcam[cv2]
-pywin32
-keyboard
-mss
-tqdm
-#ml
-scipy
+# ---- Controller ----
+vgamepad>=0.1.0
 
+# ---- Testing ----
+pytest>=8.0.0
 
-#controller
-vgamepad
-keyboard
-pyvjoy
+# ---- Utilities ----
+keyboard>=0.13.5
+tqdm>=4.66.0
+scipy>=1.11.0

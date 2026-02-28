@@ -6,6 +6,11 @@ import matplotlib.pyplot as plt
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 import ast
 
+try:
+    import pyarrow.parquet  # noqa: F401 — needed for pd.read_parquet
+except ImportError:
+    pass  # Falls back to CSV-only if pyarrow not installed.
+
 # --- STYLE CONFIGURATION ---
 plt.style.use('dark_background')
 COLOR_PRIMARY = '#00ffff'    # Cyan
@@ -33,7 +38,7 @@ class TelemetryApp:
         
         tk.Label(control_frame, text="Controls", font=("Arial", 16, "bold"), bg=BG_COLOR, fg="white").pack(pady=(0, 20))
         
-        tk.Button(control_frame, text="📂 Load CSV", command=self.load_csv, bg="#444", fg="white", font=("Arial", 11)).pack(fill=tk.X, pady=5)
+        tk.Button(control_frame, text="📂 Load Data", command=self.load_csv, bg="#444", fg="white", font=("Arial", 11)).pack(fill=tk.X, pady=5)
         
         ttk.Separator(control_frame, orient='horizontal').pack(fill='x', pady=15)
         
@@ -78,10 +83,19 @@ class TelemetryApp:
         self.canvas_dyn.get_tk_widget().pack(fill=tk.BOTH, expand=True)
 
     def load_csv(self):
-        path = filedialog.askopenfilename(filetypes=[("CSV Files", "*.csv")])
+        path = filedialog.askopenfilename(
+            filetypes=[
+                ("All Supported", "*.csv *.parquet"),
+                ("CSV Files", "*.csv"),
+                ("Parquet Files", "*.parquet"),
+            ],
+        )
         if not path: return
         try:
-            raw_df = pd.read_csv(path)
+            if path.endswith(".parquet"):
+                raw_df = pd.read_parquet(path)
+            else:
+                raw_df = pd.read_csv(path)
             self.df = self.normalize_data(raw_df)
             self.detect_laps_by_time_reset()
             self.recalculate_distance_per_lap() # The fixed calculation is here

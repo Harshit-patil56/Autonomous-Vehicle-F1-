@@ -2,7 +2,7 @@ import socket
 import ctypes
 import time
 
-from telementry.packets import (
+from .packets import (
     PacketHeader,
     PacketMotionData,
     PacketLapData,
